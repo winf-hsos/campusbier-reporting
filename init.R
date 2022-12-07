@@ -1,0 +1,8 @@
+install.packages("here")
+install.packages("tidyverse")
+install.packages("janitor")
+install.packages("ggmap")
+install.packages("osmdata")
+install.packages("hrbrthemes")
+install.packages("sysfonts")
+install.packages("showtext")
