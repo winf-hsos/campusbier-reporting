@@ -5,3 +5,6 @@
 *.html
 weekly_report_files/
 data/
+.pdf
+.hmtl
+reports/*.pdf
