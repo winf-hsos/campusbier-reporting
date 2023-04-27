@@ -7,6 +7,7 @@ format:
     df-print: kable
   pdf:
     toc: true
+    df-print: kable
 editor_options: 
   chunk_output_type: console
 execute: 
@@ -20,10 +21,15 @@ execute:
 #install.packages("tidyverse")
 #install.packages("ggmap")
 #install.packages("osmdata")
+
 library(here)
 library(tidyverse)
 library(ggmap)
 library(osmdata)
+library(scales)
+library(janitor)
+library(readxl)
+
 #library(hrbrthemes)
 #library(showtext)
 
@@ -49,13 +55,14 @@ orders_week <- orders %>%
 
 turnover_week <- orders_week %>% 
   summarize(turnover = sum(total_price))
+
 turnover_week <- format(as.double(turnover_week), big.mark = ".", decimal.mark = ",", nsmall = 2)
 
 orders_week %>% colnames()
 
 ```
 
-## Übersicht der Bestellungen
+# Übersicht der Bestellungen
 
 -   Berichtszeitraum: `r format(start_date, "%d.%m.%Y")` - `r format(end_date, "%d.%m.%Y")`
 
@@ -65,7 +72,32 @@ orders_week %>% colnames()
 
 Im Zeitraum vom **`r format(start_date, "%d.%m.%Y")` bis zum `r format(end_date, "%d.%m.%Y")`** hatten wir insgesamt **`r nrow(orders_week)` Bestellungen** über den Online-Shop. Der Gesamtumsatz betrug **`r turnover_week` €**.
 
-### Anzahl Bestellungen pro Tag
+# Übersicht pro Monat
+
+```{r}
+#| warning: false
+orders |> 
+  mutate(month = lubridate::floor_date(created_at, unit = "months"),
+         year = as.character(lubridate::year(created_at))) |> 
+  filter(year >= 2020) |> 
+  select(total_price, year, month) |> 
+  group_by(year, month) |> 
+  summarize(turnover= sum(total_price)) |> 
+  arrange(month) |> 
+  #print(n = 100)
+  
+  ggplot() +
+  aes(x = month, y = turnover, fill = year) +
+  geom_col(position="dodge") +
+  labs(x = "Monate", y = "Umsatz in EUR") +
+  ggtitle("Umsatz pro Monat über alle Jahre seit 2020") +
+  scale_fill_viridis_d() +
+  scale_y_continuous(labels = label_dollar(prefix = "", suffix = " €", big.mark = ".", decimal.mark = ",")) +
+  theme_bw()
+  
+```
+
+# Anzahl Bestellungen pro Tag
 
 ```{r}
 #| code-fold: true
@@ -73,13 +105,111 @@ orders_week %>%
   ggplot() +
   aes(x = lubridate::as_date(created_at), fill = factor(customer_is_hsos)) %>% 
   geom_bar(width = 0.8) +
-  scale_x_date(date_breaks = "1 day", date_labels = "%d.%m") +
+  scale_x_date(date_breaks = "1 week", date_labels = "%d.%m") +
   scale_fill_manual(values = c("gray", "#009ee3")) +
   theme_bw() +
   labs(x = "Datum", y = "Anzahl Bestellungen", fill = "HS intern?")
 ```
 
-## Woher kommen die Kunden?
+
+# Welche Produkte wurden verkauft?
+
+```{r}
+#| warning: false
+#| code-fold: true
+
+orders_week %>% 
+  inner_join(line_items, by = "order_id") %>% 
+  filter(!str_detect(title, "Pfand")) %>% 
+  group_by(title) %>% 
+  summarise(n = sum(quantity), 
+            turnover = sum(quantity * price)) %>% 
+  arrange(-turnover) %>% 
+  mutate(title = gsub("\\(.*\\)", "", title)) %>% 
+  rename("Produkt" = title, "Menge" = n, "Umsatz EUR" = turnover)
+  
+```
+
+# Umsatz pro Jahr
+
+Die folgende @fig-turnover-per-year zeigt den Gesamtumsatz für jedes Jahr.
+
+```{r}
+#| echo: false
+#| label: fig-turnover-per-year
+#| fig-cap: Gesamtumsatz pro Jahr
+orders %>% 
+  mutate(year = lubridate::year(created_at)) %>% 
+  group_by(year) %>% 
+  summarise(turnover = sum(total_price)) %>% 
+  ggplot() +
+  aes(x = year, y = turnover) +
+  geom_col(fill = "#009ee3") +
+  geom_text(
+    aes(label =
+          paste0(
+            format(
+              round(turnover),
+              big.mark = ".",
+              decimal.mark = ","), " €")),
+    vjust = 1.8,
+    colour = "white") +
+  labs(x = "Jahr", y = "Umsatz in EUR") +
+  ggtitle("Umsatz pro Jahr")
+```
+
+# Kostenstellesaldo
+
+```{r}
+#| echo: false
+#| warning: false
+#| code-fold: true
+
+excel_path <- here("data/kostenstelle_stb/T41005 01-04_2023.xlsx")
+kst <- read_excel(excel_path) |> 
+  clean_names()
+
+kst_kum <- kst |> 
+  arrange(gebucht) |> 
+  mutate(kum_saldo = cumsum(-saldo_pro_beleg)) |> 
+  select(gebucht, buchungstext, kum_saldo)
+
+last_date <- kst_kum |> 
+  tail(1) |> 
+  select(gebucht) |> 
+  pull()
+
+ggplot(kst_kum) +
+  aes(x = gebucht, y = kum_saldo) +
+  geom_line() +
+  scale_y_continuous(labels = function(x) paste0("€", format(x, big.mark = ".", decimal.mark = ",", nsmall = 0))) +
+  labs(x = "Buchungsdatum", y = "Saldo") +
+  ggtitle(paste0("Saldoentwicklung Kostenstelle 2023 (Stand: ", format(last_date, "%d.%m.%Y"), ")")) +
+  theme_bw()
+```
+
+# Kostenpositionen > 100 €
+
+```{r}
+#| warning: false
+#| echo: false
+# Größte Kostenposten
+kst |> 
+  mutate(saldo_pro_beleg = -saldo_pro_beleg) |> 
+  arrange(saldo_pro_beleg) |> 
+  select(kostenart_bezeichnung, buchungstext, saldo_pro_beleg) |> 
+  filter(saldo_pro_beleg < -100) |> 
+  mutate(saldo_pro_beleg = format(saldo_pro_beleg, big.mark = ".", small.mark = ",")) |>
+  mutate(buchungstext = str_trunc(buchungstext, width = 30, ellipsis = "...")) |> 
+  rename("Kostenart" = kostenart_bezeichnung, 
+         "Buchungstext" = buchungstext,
+         "Betrag" = saldo_pro_beleg)
+```
+
+
+# Woher kommen unsere Kunden?
+
+Verteilung der Kunden in dem Berichtszeitraum.
 
 ```{r}
 #| code-fold: true
@@ -107,50 +237,4 @@ ggmap(os_map) +
   scale_size_continuous(range = c(3, 6)) +
   labs(size = "Umsatz")
 
-```
-
-## Welche Produkte wurden verkauft?
-
-```{r}
-#| warning: false
-#| code-fold: true
-
-orders_week %>% 
-  inner_join(line_items, by = "order_id") %>% 
-  filter(!str_detect(title, "Pfand")) %>% 
-  group_by(title) %>% 
-  summarise(n = sum(quantity), 
-            turnover = sum(quantity * price)) %>% 
-  arrange(-turnover) %>% 
-  mutate(title = gsub("\\(.*\\)", "", title)) %>% 
-  rename("Produkt" = title, "Menge" = n, "Umsatz EUR" = turnover)
-  
-```
-
-## Umsatz pro Jahr
-
-Die folgende @fig-turnover-per-year zeigt den Gesamtumsatz für jedes Jahr.
-
-```{r}
-#| echo: false
-#| label: fig-turnover-per-year
-#| fig-cap: Gesamtumsatz pro Jahr
-orders %>% 
-  mutate(year = lubridate::year(created_at)) %>% 
-  group_by(year) %>% 
-  summarise(turnover = sum(total_price)) %>% 
-  ggplot() +
-  aes(x = year, y = turnover) +
-  geom_col(fill = "#009ee3") +
-  geom_text(
-    aes(label =
-          paste0(
-            format(
-              round(turnover),
-              big.mark = ".",
-              decimal.mark = ","), " €")),
-    vjust = 1.8,
-    colour = "white") +
-  labs(x = "Jahr", y = "Umsatz in EUR") +
-  ggtitle("Umsatz pro Jahr")
 ```
